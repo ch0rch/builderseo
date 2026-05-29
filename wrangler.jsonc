@@ -1,9 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "open-seo",
+  "name": "builderseo",
   "main": "src/server.ts",
   "compatibility_date": "2025-09-02",
-  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true,
   },
@@ -32,25 +32,25 @@
   "kv_namespaces": [
     {
       "binding": "KV",
-      "id": "4abd52f3f2c549ac83cc2cb4ceec8620",
+      "id": "c9910d884bfe47288bd6bde04923988e",
     },
     {
       "binding": "OAUTH_KV",
-      "id": "bd1759494309474a9b423b029967b0db",
+      "id": "ec6846a2662b4ba1b5017f693dc740f6",
     },
   ],
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "open-seo",
-      "database_id": "37bee90a-e1aa-404f-b01e-b0d1d479bda1",
+      "database_name": "builderseo-db",
+      "database_id": "f3464b41-77c0-4e41-8bff-0fbbe9aacb27",
       "migrations_dir": "drizzle",
     },
   ],
   "r2_buckets": [
     {
-      "bucket_name": "open-seo",
-      "binding": "R2",
+      "bucket_name": "builderseo-cache",
+      "binding": "R2","preview_bucket_name": "builderseo-cache",
     },
   ],
 }
