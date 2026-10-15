@@ -1,16 +1,12 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
-import { toast } from "sonner";
-import { getStandardErrorMessage } from "@/client/lib/error-messages";
-import { OnboardingAccountMenu } from "@/client/features/onboarding/OnboardingAccountMenu";
+import { PlanPageAccountMenu } from "@/client/features/billing/PlanPageAccountMenu";
 import { PostSignupOnboarding } from "@/client/features/onboarding/PostSignupOnboarding";
+import { projectsQueryOptions } from "@/client/features/projects/projectQueries";
 import {
-  buildOnboardingPayload,
+  ONBOARDING_STEPS,
   ONBOARDING_LAST_STEP,
-  type OnboardingAnswers,
   onboardingAnswersQueryOptions,
-  restoreOnboardingAnswers,
 } from "@/client/features/onboarding/onboardingModel";
 import { captureClientEvent } from "@/client/lib/posthog";
 import { queryClient } from "@/client/tanstack-db";
@@ -26,9 +22,16 @@ export const Route = createFileRoute("/_authenticated/onboarding/")({
   // worker isolate cannot reuse another account's cached onboarding state.
   ssr: false,
   // Step lives in the URL so it survives refresh and works with back/forward.
-  validateSearch: (search: Record<string, unknown>): { step: number } => {
+  // `domain` arrives from sign-up when the visitor checked a site with the
+  // marketing site's free keyword tool.
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { step: number; domain?: string } => {
     const raw = Number(search.step);
-    return { step: Number.isFinite(raw) ? clampStep(raw) : 0 };
+    return {
+      step: Number.isFinite(raw) ? clampStep(raw) : 0,
+      domain: typeof search.domain === "string" ? search.domain : undefined,
+    };
   },
   // Send users who already finished onboarding home before rendering. Running
   // this in beforeLoad (not a component effect) means it can't race with the
@@ -46,102 +49,87 @@ export const Route = createFileRoute("/_authenticated/onboarding/")({
 
 function OnboardingPage() {
   const { data: session } = useSession();
-  const onboardingQuery = useQuery(onboardingAnswersQueryOptions());
-
-  if (!onboardingQuery.data) {
-    return null;
-  }
-
-  return (
-    <OnboardingFlow
-      initialAnswers={restoreOnboardingAnswers(onboardingQuery.data.answers)}
-      email={session?.user?.email}
-    />
-  );
-}
-
-function OnboardingFlow({
-  initialAnswers,
-  email,
-}: {
-  initialAnswers: OnboardingAnswers;
-  email: string | undefined;
-}) {
   const navigate = useNavigate();
-  const { step } = Route.useSearch();
-  const [answers, setAnswers] = useState<OnboardingAnswers>(initialAnswers);
+  const { step, domain } = Route.useSearch();
 
   const saveMutation = useMutation({
-    mutationFn: (extra: {
-      completed?: boolean;
-      mcpSetupIntent?: "yes" | "no";
-    }) =>
+    mutationFn: (extra: { completed?: boolean }) =>
       saveOnboardingAnswers({
-        data: buildOnboardingPayload(answers, step, extra),
+        data: extra,
       }),
-    onError: (error) => {
-      toast.error(
-        getStandardErrorMessage(
-          error,
-          "Couldn’t save your answers. Please try again.",
-        ),
-      );
-    },
   });
 
   const goToStep = (next: number) =>
-    void navigate({ to: "/onboarding", search: { step: clampStep(next) } });
+    void navigate({
+      to: "/onboarding",
+      search: { step: clampStep(next), domain },
+    });
 
-  const handleNext = () => {
-    if (step === 0) {
-      captureClientEvent("onboarding:interests_selected", {
-        interests: answers.selectedInterests,
-        interest_other: answers.interestOther.trim() || undefined,
-      });
-    }
-    saveMutation.mutate({});
-    goToStep(step + 1);
-  };
+  const handleNext = () => goToStep(step + 1);
 
   const handleSkip = () => {
-    saveMutation.mutate({});
-    captureClientEvent("onboarding:step_skipped", { step });
+    captureClientEvent("onboarding:step_skipped", {
+      step,
+      step_name: ONBOARDING_STEPS[step],
+    });
     goToStep(step + 1);
   };
 
-  const handleFinish = async (mcpSetupIntent?: "yes" | "no") => {
+  const handleFinish = async () => {
     try {
-      await saveMutation.mutateAsync({
-        completed: true,
-        ...(mcpSetupIntent ? { mcpSetupIntent } : {}),
-      });
-      // Refresh the shared cache so the destination's onboarding-redirect guard
-      // sees the completed state and doesn't bounce the user back here.
-      await queryClient.invalidateQueries({ queryKey: ["onboardingAnswers"] });
+      await saveMutation.mutateAsync({ completed: true });
+      // The route guard fetched this query without a mounted observer. Refetch
+      // inactive queries too, before the dashboard reads the cached completion.
+      await queryClient.invalidateQueries(
+        {
+          queryKey: ["onboardingAnswers"],
+          refetchType: "all",
+        },
+        { throwOnError: true },
+      );
     } catch {
       // Keep the user here to retry; an unsaved completion would redirect back.
       return;
     }
     captureClientEvent("onboarding:completed", {
-      interests: answers.selectedInterests,
-      work_for: answers.workFor,
-      source: answers.source,
+      from_free_check: Boolean(domain),
     });
-    // The dashboard's onboarding checklist owns MCP coaching now.
+    // Visitors who signed up from the free keyword check came to see the rest
+    // of its results, so land them on the saved website's keywords ranking
+    // #4-20 instead of the dashboard.
+    if (domain) {
+      const [project] = await queryClient
+        .fetchQuery(projectsQueryOptions())
+        .catch(() => []);
+      if (project?.domain) {
+        void navigate({
+          to: "/p/$projectId/domain",
+          params: { projectId: project.id },
+          search: {
+            domain: project.domain,
+            minRank: 4,
+            maxRank: 20,
+            sort: "volume",
+          },
+          replace: true,
+        });
+        return;
+      }
+    }
     void navigate({ to: "/", replace: true });
   };
 
   return (
     <PostSignupOnboarding
       step={step}
-      answers={answers}
-      onAnswersChange={setAnswers}
       onNext={handleNext}
       onBack={() => goToStep(step - 1)}
+      onStepChange={goToStep}
       onSkip={handleSkip}
       onFinish={handleFinish}
+      suggestedDomain={domain}
       isSaving={saveMutation.isPending}
-      accountMenu={<OnboardingAccountMenu email={email} />}
+      accountMenu={<PlanPageAccountMenu email={session?.user?.email} />}
     />
   );
 }
